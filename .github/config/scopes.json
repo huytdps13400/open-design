@@ -188,8 +188,9 @@
       "match": {
         "prefixes": [".github/config/"],
         "exact": [
-          ".github/scripts/scopes.py", ".github/scripts/hash.py", ".github/scripts/runners.py",
-          ".github/scripts/lib/config.py", ".github/scripts/lib/github.py"
+          ".github/scripts/scopes.py", ".github/scripts/convergence.py", ".github/scripts/runners.py",
+          ".github/scripts/handoff.py", ".github/scripts/lib/config.py", ".github/scripts/lib/github.py",
+          ".github/scripts/lib/r2.py", ".github/workflows/convergence.atom.yml"
         ]
       },
       "effects": ["web_tests_required", "workspace_validation_required"], "confidence": "medium"

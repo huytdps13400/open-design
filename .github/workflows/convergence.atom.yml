@@ -1,0 +1,184 @@
+name: convergence.atom
+
+# Atomic capability: publish immutable reusable workload results only after a
+# successful ci run. All validation and R2 writes execute trusted default-branch
+# Python; pull-request code is treated solely as data.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: convergence-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish reusable workload results
+    if: >-
+      ${{
+        github.repository == 'nexu-io/open-design'
+        && github.event.workflow_run.name == 'ci'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && (
+          github.event.workflow_run.event == 'pull_request'
+          || github.event.workflow_run.event == 'merge_group'
+        )
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout trusted convergence code
+        uses: actions/checkout@v6.0.2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+
+      - name: Check trusted convergence contracts
+        run: |
+          python3 .github/scripts/handoff.py self-check
+          python3 .github/scripts/convergence.py validate
+
+      - name: Resolve convergence handoff
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          name="$(python3 .github/scripts/handoff.py artifact-name convergence ci-results)"
+          count="$(
+            gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+              | jq --arg name "$name" '[.artifacts[]? | select(.expired == false and .name == $name)] | length'
+          )"
+          if [ "$count" = "0" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$count" != "1" ]; then
+            echo "Expected one $name artifact, found $count" >&2
+            exit 1
+          fi
+          {
+            echo "found=true"
+            echo "name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download convergence handoff
+        if: ${{ steps.artifact.outputs.found == 'true' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/handoff-convergence
+          github-token: ${{ github.token }}
+
+      - name: Validate producing run and control plane
+        if: ${{ steps.artifact.outputs.found == 'true' }}
+        id: trust
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          set -euo pipefail
+          entries="$RUNNER_TEMP/convergence-handoffs.jsonl"
+          python3 .github/scripts/handoff.py list convergence "$RUNNER_TEMP/handoff-convergence" > "$entries"
+          entry="$(jq -s -c 'if length == 1 then .[0] else error("expected one convergence handoff") end' "$entries")"
+          test "$(jq -r '.run_id' <<< "$entry")" = "$RUN_ID"
+          test "$(jq -r '.run_attempt' <<< "$entry")" = "$RUN_ATTEMPT"
+          test "$(jq -r '.event' <<< "$entry")" = "$RUN_EVENT"
+          test "$(jq -r '.head_sha' <<< "$entry")" = "$RUN_HEAD_SHA"
+          test "$(jq -r '.repository' <<< "$entry")" = "$REPOSITORY"
+          test "$(jq -r '.repository_id' <<< "$entry")" = "$REPOSITORY_ID"
+          test "$(jq -r '.workflow' <<< "$entry")" = "ci"
+          test "$(jq -r '.policy' <<< "$entry")" = "ci-v1"
+          candidate="$(jq -r '.candidate_path' <<< "$entry")"
+          base_sha="$(jq -r '.base_sha' <<< "$entry")"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+          # A PR may provide result data, never the publisher or its policy. If
+          # it changes the control plane, leave this run un-published and let the
+          # merged default-branch version establish the next trusted policy.
+          git fetch --no-tags --depth=1 origin "$base_sha" "$RUN_HEAD_SHA"
+          mapfile -t control_paths < <(python3 .github/scripts/convergence.py control-paths)
+          if ! git diff --quiet "$base_sha" "$RUN_HEAD_SHA" -- "${control_paths[@]}"; then
+            echo "Control plane differs from the trusted default branch; skipping publication."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git diff --quiet HEAD "$base_sha" -- "${control_paths[@]}"; then
+            echo "Producing base used a superseded convergence control plane; skipping publication."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve publication configuration
+        if: ${{ steps.trust.outputs.publish == 'true' }}
+        id: storage
+        env:
+          R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_URL }}
+          R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_BUCKET }}
+          PUBLIC_ORIGIN: ${{ secrets.OD_WORKLOAD_RESULTS_BASE_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_AK }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_SK }}
+        run: |
+          if [ -z "$R2_ENDPOINT" ] || [ -z "$R2_BUCKET" ] || [ -z "$PUBLIC_ORIGIN" ] \
+            || [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ]; then
+            echo "Workload result storage is not configured; validated shadow result was not published."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download current-run product artifacts
+        if: ${{ steps.storage.outputs.configured == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          CANDIDATE: ${{ steps.trust.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          products_root="$RUNNER_TEMP/convergence-products"
+          mkdir -p "$products_root"
+          python3 .github/scripts/convergence.py product-sources --candidate "$CANDIDATE" \
+            | jq -r '.[]' \
+            | while IFS= read -r source; do
+                artifact_id="$(
+                  gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+                    | jq -r --arg source "$source" \
+                      '[.artifacts[]? | select(.expired == false and .name == $source)] | if length == 1 then .[0].id else error("expected exactly one current-run product artifact") end'
+                )"
+                gh api "repos/$REPO/actions/artifacts/$artifact_id/zip" > "$products_root/$source.zip"
+              done
+
+      - name: Publish immutable workload results
+        if: ${{ steps.storage.outputs.configured == 'true' }}
+        env:
+          R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_URL }}
+          R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_BUCKET }}
+          PUBLIC_ORIGIN: ${{ secrets.OD_WORKLOAD_RESULTS_BASE_URL }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_AK }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_WORKLOAD_RESULTS_SK }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/convergence.py publish \
+            --candidate "${{ steps.trust.outputs.candidate }}" \
+            --output-dir "$RUNNER_TEMP/convergence-publication" \
+            --endpoint "$R2_ENDPOINT" \
+            --bucket "$R2_BUCKET" \
+            --public-origin "$PUBLIC_ORIGIN" \
+            --products-root "$RUNNER_TEMP/convergence-products"

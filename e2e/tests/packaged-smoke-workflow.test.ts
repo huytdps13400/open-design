@@ -39,6 +39,7 @@ const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
 const reportWorkflowPath = join(workspaceRoot, ".github", "workflows", "report.atom.yml");
+const convergenceWorkflowPath = join(workspaceRoot, ".github", "workflows", "convergence.atom.yml");
 const contributorMaintainerCheckWorkflowPath = join(
   workspaceRoot,
   ".github",
@@ -68,6 +69,8 @@ const bakePreviewsReleaseWorkflowPath = join(
 );
 const finalizeReleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "finalize-release.yml");
 const handoffScriptPath = join(workspaceRoot, ".github", "scripts", "handoff.py");
+const convergenceScriptPath = join(workspaceRoot, ".github", "scripts", "convergence.py");
+const r2PythonLibPath = join(workspaceRoot, ".github", "scripts", "lib", "r2.py");
 const releaseBetaWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-beta.yml");
 const dailyBetaRecoveryScriptPath = join(
   workspaceRoot,
@@ -194,7 +197,7 @@ function extractValidateGateJqPrograms(workflow: string): { failures: string; re
   const needsCheck = sectionBetween(
     validate,
     "      - name: Check workspace validation jobs",
-    "      - name: Download pending hash map",
+    "      - name: Checkout convergence control plane",
   );
   const programs = [...needsCheck.matchAll(/jq -r '([\s\S]*?)'/g)].map((match) => match[1] ?? "");
   expect(programs).toHaveLength(2);
@@ -1099,7 +1102,7 @@ process.stdin.on("end", () => {
     const validate = sectionBetween(workflow, "  validate:", "  runtime_summary:");
 
     expect(workflow).toContain("ci_mode:");
-    expect(plan).toContain("run: ${{ steps.hash.outputs.run }}");
+    expect(plan).toContain("run: ${{ steps.convergence.outputs.run }}");
     expect(plan).toContain("scopes: ${{ steps.scopes.outputs.scopes }}");
     expect(workflow).toContain("fromJSON(needs.plan.outputs.run).ui_p0");
     expect(validate).toContain("[$run | to_entries[] | select(.value) | .key]");
@@ -1340,16 +1343,16 @@ process.stdin.on("end", () => {
     await expect(validateGatePasses(workflow, needsWithFailedWeb)).resolves.toBe(false);
   });
 
-  it("[P1] publishes hash state only after the workspace gate succeeds", async () => {
+  it("[P1] hands off convergence results only after the workspace gate succeeds", async () => {
     const workflow = await readFile(ciWorkflowPath, "utf8");
     const plan = sectionBetween(workflow, "  plan:", "  static_gate:");
     const validate = sectionBetween(workflow, "  validate:", "  runtime_summary:");
 
-    expect(plan).toContain("Upload pending hash map");
+    expect(plan).toContain("Upload pending convergence plan");
     expect(plan).not.toContain("actions/cache/save");
-    expect(validate).toContain("Download pending hash map");
-    expect(validate).toContain("Save successful hash map");
-    expect(validate.indexOf("Save successful hash map")).toBeGreaterThan(
+    expect(validate).toContain("Download pending convergence plan");
+    expect(validate).toContain("Upload convergence handoff");
+    expect(validate.indexOf("Upload convergence handoff")).toBeGreaterThan(
       validate.indexOf("Check workspace validation jobs"),
     );
     expect(validate).not.toContain("Block merge while a merge-blocking label is present");
@@ -1763,11 +1766,12 @@ process.stdin.on("end", () => {
   });
 
   it("[P2] routes CI follow-ons through generic handoff workflows", async () => {
-    const [ciWorkflow, commentWorkflow, autofixWorkflow, reportWorkflow, handoffScript] = await Promise.all([
+    const [ciWorkflow, commentWorkflow, autofixWorkflow, reportWorkflow, convergenceWorkflow, handoffScript] = await Promise.all([
       readFile(ciWorkflowPath, "utf8"),
       readFile(commentWorkflowPath, "utf8"),
       readFile(autofixWorkflowPath, "utf8"),
       readFile(reportWorkflowPath, "utf8"),
+      readFile(convergenceWorkflowPath, "utf8"),
       readFile(handoffScriptPath, "utf8"),
     ]);
 
@@ -1775,8 +1779,10 @@ process.stdin.on("end", () => {
     // Packaging hash autofix left core ci with nix — no ci-produced autofix handoffs for now.
     expect(ciWorkflow).toContain("handoff.py dir comment");
     expect(ciWorkflow).toContain("handoff.py dir report");
+    expect(ciWorkflow).toContain("handoff.py dir convergence");
     expect(ciWorkflow).toContain("handoff-comment-");
     expect(ciWorkflow).toContain("handoff-report-");
+    expect(ciWorkflow).toContain("handoff-convergence-");
     expect(ciWorkflow).not.toContain("handoff.py dir autofix");
     expect(ciWorkflow).not.toContain("handoff-autofix-");
     expect(ciWorkflow).not.toContain("nix-hash-autofix");
@@ -1798,6 +1804,17 @@ process.stdin.on("end", () => {
     expect(reportWorkflow).not.toContain("handoff-comment-");
     expect(handoffScript).toContain("def self_check()");
     expect(handoffScript).toContain('"report"');
+    expect(handoffScript).toContain('"convergence"');
+    expect(convergenceWorkflow).toContain("artifact-name convergence ci-results");
+    expect(convergenceWorkflow).toContain("Checkout trusted convergence code");
+    expect(convergenceWorkflow).toContain("convergence.py control-paths");
+    expect(convergenceWorkflow).toContain('git diff --quiet "$base_sha" "$RUN_HEAD_SHA"');
+    expect(convergenceWorkflow).toContain('git diff --quiet HEAD "$base_sha"');
+    expect(convergenceWorkflow).toContain("python3 .github/scripts/convergence.py publish");
+    expect(convergenceWorkflow).toContain("convergence.py product-sources");
+    expect(convergenceWorkflow).toContain('artifacts/$artifact_id/zip');
+    expect(convergenceWorkflow).toContain("CLOUDFLARE_R2_WORKLOAD_RESULTS_AK");
+    expect(convergenceWorkflow).not.toContain("actions/checkout@v6.0.2\n        with:\n          ref: ${{ github.event.workflow_run.head_sha }}");
 
     for (const workflow of [commentWorkflow, autofixWorkflow]) {
       expect(workflow).toContain("python3 .github/scripts/handoff.py self-check");
@@ -1816,6 +1833,22 @@ process.stdin.on("end", () => {
       expect(workflow).not.toContain("--field body=\"$(cat");
       expect(workflow).not.toContain("--field \"body=$(cat");
     }
+  });
+
+  it("[P1] keeps workload policy above the narrow Python R2 transport", async () => {
+    const [workflow, convergence, r2] = await Promise.all([
+      readFile(convergenceWorkflowPath, "utf8"),
+      readFile(convergenceScriptPath, "utf8"),
+      readFile(r2PythonLibPath, "utf8"),
+    ]);
+    expect(convergence).toContain("from lib.r2 import R2Client");
+    expect(convergence).toContain("def publish_command");
+    expect(r2).toContain("class R2Client");
+    expect(r2).toContain('headers["if-none-match"] = "*"');
+    expect(r2).not.toContain("workload result");
+    expect(r2).not.toContain("handoff");
+    expect(workflow).not.toContain("r2.ts");
+    expect(workflow).not.toContain("publish-workload-results");
   });
 
   it("[P2] keeps pull-request plugin preview baking secretless and read-only", async () => {
