@@ -1010,11 +1010,11 @@
       "hash": "b4f19c1086194053"
     },
     "example-ib-pitch-book": {
-      "video": "example-ib-pitch-book/8bca422b2430247e/preview.mp4",
-      "poster": "example-ib-pitch-book/8bca422b2430247e/poster.jpg",
+      "video": "example-ib-pitch-book/ad457a422c543aaa/preview.mp4",
+      "poster": "example-ib-pitch-book/ad457a422c543aaa/poster.jpg",
       "durationMs": 1267,
       "holdMs": 1267,
-      "hash": "8bca422b2430247e"
+      "hash": "ad457a422c543aaa"
     },
     "example-image-poster": {
       "video": "example-image-poster/827e5514edd44925/preview.mp4",
