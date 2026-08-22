@@ -140,12 +140,16 @@ function addProxyEnvValue(
   if (platform !== "win32") env[key.toLowerCase()] = trimmed;
 }
 
-/** @internal Expand a single NO_PROXY bypass token into its normalized forms (e.g. `<local>`, `*.foo`, `::1`). */
+/** @internal Expand a NO_PROXY token into a cross-client-safe form, omitting unsupported CIDR ranges. */
 function normalizeBypassToken(token: string): string[] {
   const trimmed = token.trim();
-  if (!trimmed) return [];
-  if (trimmed === "<local>") return ["<local>", "localhost", "127.0.0.1", "[::1]", ".local"];
-  if (trimmed === "::1") return ["[::1]"];
+  if (!trimmed || trimmed.includes("/")) return [];
+  if (trimmed === "<local>") return ["<local>", "localhost", "127.0.0.1", "::1", ".local"];
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const address = trimmed.slice(1, -1);
+    // httpx accepts bare IPv6 literals but parses bracketed literals as malformed ports.
+    if (address.includes(":")) return [address];
+  }
   if (trimmed.startsWith("*.")) return [`.${trimmed.slice(2)}`];
   return [trimmed];
 }
@@ -229,7 +233,7 @@ function finalizeSystemProxyEnv(
         ...(values.noProxy ? values.noProxy.split(",") : []),
         "localhost",
         "127.0.0.1",
-        "[::1]",
+        "::1",
       ])
     : null;
   const env: NodeJS.ProcessEnv = {};
