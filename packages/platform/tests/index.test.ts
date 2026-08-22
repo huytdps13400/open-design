@@ -225,8 +225,8 @@ describe("system proxy env resolution", () => {
 }
 `);
 
-    expect(env.NO_PROXY).toBe("2001:db8::10,::1,.corp,localhost,127.0.0.1");
-    expect(env.no_proxy).toBe("2001:db8::10,::1,.corp,localhost,127.0.0.1");
+    expect(env.NO_PROXY).toBe("10.0.0.0/8,2001:db8::10,::1,.corp,localhost,127.0.0.1");
+    expect(env.no_proxy).toBe("10.0.0.0/8,2001:db8::10,::1,.corp,localhost,127.0.0.1");
   });
 
   it("brackets IPv6 system proxy hosts before composing proxy URLs", () => {
@@ -347,7 +347,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 `,
     });
 
-    expect(env.NO_PROXY).toBe("::1,2001:db8::10,.corp,localhost,127.0.0.1");
+    expect(env.NO_PROXY).toBe("::1,10.0.0.0/8,2001:db8::10,.corp,localhost,127.0.0.1");
   });
 
   it("preserves a wildcard macOS bypass list", () => {

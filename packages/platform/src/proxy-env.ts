@@ -140,10 +140,11 @@ function addProxyEnvValue(
   if (platform !== "win32") env[key.toLowerCase()] = trimmed;
 }
 
-/** @internal Expand a NO_PROXY token into a cross-client-safe form, omitting unsupported CIDR ranges. */
+/** @internal Expand a NO_PROXY token into a cross-client-safe form, omitting incompatible IPv6 CIDR ranges. */
 function normalizeBypassToken(token: string): string[] {
   const trimmed = token.trim();
-  if (!trimmed || trimmed.includes("/")) return [];
+  if (!trimmed) return [];
+  if (trimmed.includes(":") && trimmed.includes("/")) return [];
   if (trimmed === "<local>") return ["<local>", "localhost", "127.0.0.1", "::1", ".local"];
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
     const address = trimmed.slice(1, -1);
