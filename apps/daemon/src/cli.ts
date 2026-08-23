@@ -2272,6 +2272,14 @@ Options:
                        daemon changes ports, so an existing task can
                        survive an OpenDesign restart.
 
+Environment:
+  OD_MCP_STDIO_IDLE_EXIT_MS
+                       Milliseconds without MCP activity before this
+                       stdio process exits. Defaults to 1800000 (30
+                       minutes), is capped at 86400000 (24 hours), and
+                       can be set to 0 to keep the process alive until
+                       the MCP client disconnects.
+
 Tools exposed:
   list_projects                  list every OpenDesign project
   get_active_context             what project/file the user has open right now
