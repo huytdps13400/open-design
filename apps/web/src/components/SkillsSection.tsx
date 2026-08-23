@@ -238,6 +238,12 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   const searchQuery = search.toLowerCase().trim();
   const hasUserSkills = skills.some((skill) => skill.source === 'user');
 
+  useEffect(() => {
+    if (!hasUserSkills) {
+      setSourceFilter((current) => (current === 'user' ? 'all' : current));
+    }
+  }, [hasUserSkills]);
+
   const sourceCounts = useMemo(() => {
     const counts = new Map<SourceFilter, number>([
       ['all', 0],

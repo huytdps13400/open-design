@@ -87,6 +87,8 @@ function renderSkillsSection(
       );
     }
     if (url.startsWith('/api/skills/') && init?.method === 'DELETE') {
+      const id = decodeURIComponent(url.split('/').pop() ?? '');
+      catalog = catalog.filter((skill) => skill.id !== id);
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -178,6 +180,39 @@ describe('SkillsSection', () => {
     ]);
 
     expect(await screen.findByRole('option', { name: 'user (1)' })).toBeTruthy();
+  });
+
+  it('returns to all sources after deleting the final user skill', async () => {
+    renderSkillsSection([
+      makeSkill({
+        id: 'user-skill',
+        name: 'User skill',
+        source: 'user',
+      }),
+      makeSkill({
+        id: 'builtin-skill',
+        name: 'Built-in skill',
+        source: 'built-in',
+      }),
+    ]);
+
+    await screen.findByRole('option', { name: 'user (1)' });
+    const sourceFilter = screen.getByLabelText('Source');
+    fireEvent.change(sourceFilter, { target: { value: 'user' } });
+
+    expect(sourceFilter).toHaveValue('user');
+    expect(screen.queryByTestId('skill-row-builtin-skill')).toBeNull();
+
+    const userRow = screen.getByTestId('skill-row-user-skill');
+    fireEvent.click(within(userRow).getByTestId('skills-delete'));
+    fireEvent.click(within(userRow).getByTestId('skills-delete-confirm'));
+
+    await waitFor(() => {
+      expect(sourceFilter).toHaveValue('all');
+      expect(sourceFilter).not.toHaveAttribute('data-active');
+      expect(screen.getByTestId('skill-row-builtin-skill')).toBeTruthy();
+    });
+    expect(screen.queryByRole('option', { name: /^user \(/ })).toBeNull();
   });
 
   it('does not expose delete actions for built-in skills', async () => {
