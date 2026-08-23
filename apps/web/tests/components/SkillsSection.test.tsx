@@ -155,6 +155,31 @@ describe('SkillsSection', () => {
     vi.restoreAllMocks();
   });
 
+  it('hides the user source filter when the catalog only contains built-in skills', async () => {
+    renderSkillsSection([
+      makeSkill({
+        id: 'builtin-skill',
+        name: 'Built-in skill',
+        source: 'built-in',
+      }),
+    ]);
+
+    await screen.findByRole('option', { name: 'built-in (1)' });
+    expect(screen.queryByRole('option', { name: /^user \(/ })).toBeNull();
+  });
+
+  it('shows the user source filter when a user skill exists', async () => {
+    renderSkillsSection([
+      makeSkill({
+        id: 'user-skill',
+        name: 'User skill',
+        source: 'user',
+      }),
+    ]);
+
+    expect(await screen.findByRole('option', { name: 'user (1)' })).toBeTruthy();
+  });
+
   it('does not expose delete actions for built-in skills', async () => {
     renderSkillsSection([
       makeSkill({

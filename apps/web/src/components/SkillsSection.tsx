@@ -236,6 +236,7 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   );
 
   const searchQuery = search.toLowerCase().trim();
+  const hasUserSkills = skills.some((skill) => skill.source === 'user');
 
   const sourceCounts = useMemo(() => {
     const counts = new Map<SourceFilter, number>([
@@ -654,7 +655,10 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
               <option value="all">
                 {t('settings.libraryAll')} ({sourceCounts.get('all') ?? 0})
               </option>
-              {(['user', 'built-in'] as const).map((s) => {
+              {(hasUserSkills
+                ? (['user', 'built-in'] as const)
+                : (['built-in'] as const)
+              ).map((s) => {
                 const count = sourceCounts.get(s) ?? 0;
                 return (
                   <option key={s} value={s}>
