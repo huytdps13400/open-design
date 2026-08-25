@@ -3280,6 +3280,7 @@ export const esES: Dict = {
   'fileViewer.exportingElapsed': 'Exportando… {seconds}s',
   'fileViewer.exportSlideEta': 'Diapositiva {current}/{total} · quedan ~{seconds}s',
   'fileViewer.exportFailed': 'La exportación falló. Inténtalo de nuevo.',
+  'fileViewer.exportReady': 'Listo para guardar',
   'fileViewer.exportDone': 'Exportación completada',
   'fileViewer.exportImageFailed': 'Error al capturar la imagen. Inténtalo de nuevo o usa la herramienta de captura de pantalla de tu navegador.',
   'fileViewer.exportImageModalSubtitle': 'Elige un formato y descarga la vista previa actual como imagen.',

@@ -3408,6 +3408,8 @@ type ExportToastState = {
   tone: 'default' | 'success' | 'error' | 'loading';
 };
 
+type ShareExportCompletion = 'saved' | 'ready_to_save' | 'cancelled';
+
 export type DeckKeyboardShortcut = 'next' | 'prev' | 'first' | 'last' | 'reset';
 
 type DeckKeyboardShortcutEvent = Pick<
@@ -7542,10 +7544,9 @@ function HtmlViewer({
     }
   };
   // Shared helper for the share menu: emit studio_click share_option on
-  // entry and artifact_export_result on resolution. Sync exports report
-  // success immediately after the call returns; async exports get .then
-  // / .catch. The same request_id threads both events so PostHog can
-  // stitch click → result via $insert_id correlation.
+  // entry, then report a terminal result only when persistence is known.
+  // Browser-managed downloads stop at ready_to_save because the user can
+  // still cancel the save dialog after the download handoff resolves.
   const fireShareExport = (
     format:
       | 'pdf'
@@ -7557,7 +7558,7 @@ function HtmlViewer({
       | 'template'
       | 'share_link'
       | 'share_page',
-    fn: () => Promise<unknown> | unknown,
+    fn: () => Promise<ShareExportCompletion> | ShareExportCompletion,
     context?: HtmlVersionExportContext | null,
   ) => {
     if (!workspaceActive) return;
@@ -7649,35 +7650,26 @@ function HtmlViewer({
       const message = err instanceof Error && err.message ? err.message : t('fileViewer.exportFailed');
       if (toastFormats.has(format)) setExportToast({ message, tone: 'error' });
     };
-    try {
-      const out = fn();
-      if (out && typeof (out as Promise<unknown>).then === 'function') {
-        (out as Promise<unknown>).then(
-          (result) => {
-            stopTicker();
-            if (result === 'cancelled') {
-              void finish('cancelled');
-              if (toastFormats.has(format)) setExportToast(null);
-              return;
-            }
-            void finish('success');
-            if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
-          },
-          (err) => {
-            void finish('failed', exportErrorCode(err));
-            failToast(err);
-          },
-        );
-      } else {
-        stopTicker();
-        if (out === 'cancelled') {
-          void finish('cancelled');
-          if (toastFormats.has(format)) setExportToast(null);
-          return;
-        }
+    const complete = (completion: ShareExportCompletion) => {
+      stopTicker();
+      if (completion === 'cancelled') {
+        void finish('cancelled');
+        if (toastFormats.has(format)) setExportToast(null);
+        return;
+      }
+      if (completion === 'saved') {
         void finish('success');
         if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
+        return;
       }
+      if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportReady'), tone: 'default' });
+    };
+    try {
+      const out = fn();
+      void Promise.resolve(out).then(complete, (err) => {
+        void finish('failed', exportErrorCode(err));
+        failToast(err);
+      });
     } catch (err) {
       void finish('failed', exportErrorCode(err));
       failToast(err);
@@ -14701,7 +14693,9 @@ function HtmlViewer({
     return isDeckArtifact || sourceLooksLikeExportableDeck(context.content);
   }, [deckExportSignal, isDeckArtifact]);
 
-  async function exportHtmlPdf(context?: HtmlVersionExportContext | null) {
+  async function exportHtmlPdf(
+    context?: HtmlVersionExportContext | null,
+  ): Promise<ShareExportCompletion> {
     const pdfTitle = context?.title ?? exportTitle;
     const pdfSource = context?.content ?? source ?? '';
     const pdfDeck = deckExportSignalForContext(context);
@@ -14718,14 +14712,14 @@ function HtmlViewer({
         deck: pdfDeck,
         ...(context?.versionId ? { versionId: context.versionId } : {}),
       });
-      if (res.ok) return;
+      if (res.ok) return 'ready_to_save' as const;
       // A SEMANTIC failure (bad deck routing, unreadable renderer output,
       // renderer 502, ...) must surface, not silently downgrade to the vector
       // PDF, which can reintroduce the fidelity bugs the screenshot path
       // exists to avoid. Only a genuinely unavailable renderer falls through.
       if (!('unavailable' in res)) throw new Error(res.error);
     }
-    await exportProjectAsPdf({
+    const result = await exportProjectAsPdf({
       deck: pdfDeck,
       fallbackPdf: () => exportAsPdf(pdfSource, pdfTitle, { deck: pdfDeck, onProgress: onExportProgress }),
       filePath: file.name,
@@ -14734,6 +14728,8 @@ function HtmlViewer({
       workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     });
+    if (result === 'cancelled') return 'cancelled';
+    return result === 'desktop' ? 'saved' : 'ready_to_save';
   }
 
   function triggerPdfExport(context?: HtmlVersionExportContext) {
@@ -14741,24 +14737,30 @@ function HtmlViewer({
   }
 
   function triggerZipExport(context?: HtmlVersionExportContext) {
-    fireShareExport('zip', () => exportProjectAsZip({
-      projectId,
-      filePath: file.name,
-      fallbackHtml: context?.content ?? source ?? '',
-      fallbackTitle: context?.title ?? exportTitle,
-      workspaceContext,
-      ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }), context);
+    fireShareExport('zip', async () => {
+      await exportProjectAsZip({
+        projectId,
+        filePath: file.name,
+        fallbackHtml: context?.content ?? source ?? '',
+        fallbackTitle: context?.title ?? exportTitle,
+        workspaceContext,
+        ...(context?.versionId ? { versionId: context.versionId } : {}),
+      });
+      return 'ready_to_save' as const;
+    }, context);
   }
 
   function triggerHtmlExport(context?: HtmlVersionExportContext) {
-    fireShareExport('html', () => exportProjectAsHtml({
-      projectId,
-      filePath: file.name,
-      fallbackTitle: context?.title ?? exportTitle,
-      workspaceContext,
-      ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }), context);
+    fireShareExport('html', async () => {
+      await exportProjectAsHtml({
+        projectId,
+        filePath: file.name,
+        fallbackTitle: context?.title ?? exportTitle,
+        workspaceContext,
+        ...(context?.versionId ? { versionId: context.versionId } : {}),
+      });
+      return 'ready_to_save' as const;
+    }, context);
   }
 
   useEffect(() => {
@@ -16784,39 +16786,7 @@ function HtmlViewer({
                       // packaged runtime (no embedded fonts) — unacceptable for a
                       // Chinese-first product. Falls back to the vector/browser
                       // print path on web or on failure.
-                      fireShareExport('pdf', async () => {
-                        if (isOpenDesignHostAvailable()) {
-                          const res = await exportProjectScreenshotPdf({
-                            projectId,
-                            fileName: file.name,
-                            title: exportTitle,
-                            workspaceContext,
-                            // Broader deck signal than the viewer's nav so
-                            // runtime-managed decks (<deck-stage>) paginate per
-                            // slide; the vector fallback below uses the SAME
-                            // signal, so an artifact exports identically with or
-                            // without a desktop host (no per-host divergence).
-                            deck: deckExportSignal,
-                          });
-                          if (res.ok) return;
-                          // A SEMANTIC failure (bad deck routing, unreadable
-                          // renderer output, renderer 502, …) must surface — NOT
-                          // silently downgrade to the vector PDF, which can
-                          // reintroduce the CJK-glyph / fidelity bugs the
-                          // screenshot path exists to avoid. Only a genuinely
-                          // unavailable renderer (no host / 501 / transport)
-                          // falls through to the vector path below.
-                          if (!('unavailable' in res)) throw new Error(res.error);
-                        }
-                        await exportProjectAsPdf({
-                          deck: deckExportSignal,
-                          fallbackPdf: () => exportAsPdf(source ?? '', exportTitle, { deck: deckExportSignal, onProgress: onExportProgress }),
-                          filePath: file.name,
-                          projectId,
-                          title: exportTitle,
-                          workspaceContext,
-                        });
-                      });
+                      fireShareExport('pdf', () => exportHtmlPdf());
                     }}
                   >
                     <span className="share-menu-icon"><RemixIcon name="file-line" size={15} /></span>
@@ -16868,13 +16838,7 @@ function HtmlViewer({
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
                     onClick={() => {
                       setDeployMenuOpen(false);
-                      fireShareExport('zip', () => exportProjectAsZip({
-                        projectId,
-                        filePath: file.name,
-                        fallbackHtml: source ?? '',
-                        fallbackTitle: exportTitle,
-                        workspaceContext,
-                      }));
+                      triggerZipExport();
                     }}
                   >
                     <span className="share-menu-icon"><RemixIcon name="file-zip-line" size={15} /></span>
@@ -16888,12 +16852,7 @@ function HtmlViewer({
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
                     onClick={() => {
                       setDeployMenuOpen(false);
-                      fireShareExport('html', () => exportProjectAsHtml({
-                        projectId,
-                        filePath: file.name,
-                        fallbackTitle: exportTitle,
-                        workspaceContext,
-                      }));
+                      triggerHtmlExport();
                     }}
                   >
                     <span className="share-menu-icon"><RemixIcon name="file-code-line" size={15} /></span>
@@ -16906,7 +16865,10 @@ function HtmlViewer({
                       role="menuitem"
                       onClick={() => {
                         setDeployMenuOpen(false);
-                        fireShareExport('markdown', () => exportAsMd(source ?? '', exportTitle));
+                        fireShareExport('markdown', () => {
+                          exportAsMd(source ?? '', exportTitle);
+                          return 'ready_to_save' as const;
+                        });
                       }}
                     >
                       <span className="share-menu-icon"><RemixIcon name="file-line" size={15} /></span>
@@ -17650,6 +17612,7 @@ function HtmlViewer({
                             : t('fileViewer.exportPptxNa'),
                       );
                     }
+                    return 'ready_to_save' as const;
                   });
                 }}
               >

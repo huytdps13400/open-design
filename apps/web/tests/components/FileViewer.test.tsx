@@ -7767,6 +7767,94 @@ describe('FileViewer SVG artifacts', () => {
     expect(screen.queryByText('Export started')).toBeNull();
   });
 
+  it('keeps browser-managed exports ready to save without reporting success', async () => {
+    const originalCreateObjectUrl = URL.createObjectURL;
+    const originalRevokeObjectUrl = URL.revokeObjectURL;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:html-export'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    const exportResponse = deferredResponse();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url === '/api/projects/project-1/export/html') return exportResponse.promise;
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const file = baseFile({
+      name: 'index.html',
+      path: 'index.html',
+      mime: 'text/html',
+      kind: 'html',
+      artifactManifest: {
+        version: 1,
+        kind: 'html',
+        title: 'Page',
+        entry: 'index.html',
+        renderer: 'html',
+        exports: ['html'],
+      },
+    });
+
+    try {
+      render(
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={file}
+          liveHtml="<html><body><h1>Hello</h1></body></html>"
+        />,
+      );
+
+      await openUnifiedExportTab();
+      fireEvent.click(screen.getByRole('menuitem', { name: /Export as standalone HTML/i }));
+
+      const loadingToast = (await screen.findByText('Exporting…')).closest('.od-toast');
+      expect(loadingToast).toBeTruthy();
+      expect(loadingToast?.classList.contains('placement-top')).toBe(true);
+
+      await act(async () => {
+        exportResponse.resolve(new Response('<html><body>Hello</body></html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }));
+        await exportResponse.promise;
+      });
+
+      const readyToast = (await screen.findByText('Ready to save')).closest('.od-toast');
+      expect(readyToast).toBe(loadingToast);
+      expect(readyToast?.classList.contains('placement-top')).toBe(true);
+      expect(readyToast?.classList.contains('tone-default')).toBe(true);
+      expect(screen.queryByText('Export complete')).toBeNull();
+      expect(
+        analyticsTrackMock.mock.calls.filter(([eventName]) => eventName === 'artifact_export_result'),
+      ).toEqual([]);
+    } finally {
+      if (originalCreateObjectUrl) {
+        Object.defineProperty(URL, 'createObjectURL', {
+          configurable: true,
+          value: originalCreateObjectUrl,
+        });
+      } else {
+        Reflect.deleteProperty(URL, 'createObjectURL');
+      }
+      if (originalRevokeObjectUrl) {
+        Object.defineProperty(URL, 'revokeObjectURL', {
+          configurable: true,
+          value: originalRevokeObjectUrl,
+        });
+      } else {
+        Reflect.deleteProperty(URL, 'revokeObjectURL');
+      }
+    }
+  });
+
   it('disables share link actions while the artifact is still streaming', async () => {
     const file = baseFile({
       name: 'index.html',
