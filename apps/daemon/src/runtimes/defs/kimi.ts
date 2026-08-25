@@ -22,6 +22,7 @@ export const kimiAgentDef = {
       }),
     buildArgs: () => ['acp'],
     streamFormat: 'acp-json-rpc',
+    proxyEnvCompatibility: 'httpx',
     mcpDiscovery: 'mature-acp',
     externalMcpInjection: 'acp-merge',
 } satisfies RuntimeAgentDef;

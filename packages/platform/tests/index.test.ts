@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -199,16 +200,16 @@ describe("system proxy env resolution", () => {
       HTTP_PROXY: "http://127.0.0.1:7890",
       HTTPS_PROXY: "http://corp-proxy.internal:7891",
       ALL_PROXY: "socks5://127.0.0.1:1080",
-      NO_PROXY: ".local,localhost,127.0.0.1,::1",
+      NO_PROXY: ".local,localhost,127.0.0.1,[::1]",
       NODE_USE_ENV_PROXY: "1",
       http_proxy: "http://127.0.0.1:7890",
       https_proxy: "http://corp-proxy.internal:7891",
       all_proxy: "socks5://127.0.0.1:1080",
-      no_proxy: ".local,localhost,127.0.0.1,::1",
+      no_proxy: ".local,localhost,127.0.0.1,[::1]",
     });
   });
 
-  it("filters CIDR bypasses and emits IPv6 literals in an httpx-compatible form", () => {
+  it("filters IPv6 CIDR bypasses and emits Node-compatible IPv6 literals", () => {
     const env = parseMacosScutilProxyOutput(`
 <dictionary> {
   ExceptionsList : <array> {
@@ -225,8 +226,48 @@ describe("system proxy env resolution", () => {
 }
 `);
 
-    expect(env.NO_PROXY).toBe("10.0.0.0/8,2001:db8::10,::1,.corp,localhost,127.0.0.1");
-    expect(env.no_proxy).toBe("10.0.0.0/8,2001:db8::10,::1,.corp,localhost,127.0.0.1");
+    expect(env.NO_PROXY).toBe("10.0.0.0/8,[2001:db8::10],[::1],.corp,localhost,127.0.0.1");
+    expect(env.no_proxy).toBe("10.0.0.0/8,[2001:db8::10],[::1],.corp,localhost,127.0.0.1");
+  });
+
+  it("emits a NO_PROXY value that bypasses Node's env proxy for IPv6 loopback", () => {
+    const env = parseMacosScutilProxyOutput(`
+<dictionary> {
+  ExceptionsList : <array> {
+    0 : ::1
+  }
+  HTTPEnable : 1
+  HTTPPort : 1
+  HTTPProxy : 127.0.0.1
+}
+`);
+    const script = `
+      const http = require("node:http");
+      const server = http.createServer((_request, response) => response.end("ok"));
+      server.listen(0, "::1", async () => {
+        try {
+          const address = server.address();
+          const response = await fetch("http://[::1]:" + address.port);
+          if (await response.text() !== "ok") process.exitCode = 2;
+        } catch {
+          process.exitCode = 1;
+        } finally {
+          server.close();
+        }
+      });
+    `;
+    const result = spawnSync(process.execPath, ["-e", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HTTP_PROXY: "http://127.0.0.1:1",
+        NODE_USE_ENV_PROXY: "1",
+        NO_PROXY: env.NO_PROXY,
+      },
+      timeout: 5_000,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("brackets IPv6 system proxy hosts before composing proxy URLs", () => {
@@ -274,7 +315,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
       HTTP_PROXY: "http://10.0.0.2:8080",
       HTTPS_PROXY: "http://10.0.0.3:8443",
       ALL_PROXY: "socks5://10.0.0.4:1080",
-      NO_PROXY: "localhost,<local>,127.0.0.1,::1,.local,.corp",
+      NO_PROXY: "localhost,<local>,127.0.0.1,[::1],.local,.corp",
       NODE_USE_ENV_PROXY: "1",
     });
   });
@@ -312,7 +353,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
     });
   });
 
-  it("preserves bare IPv6 loopback bypass entries", () => {
+  it("brackets IPv6 loopback bypass entries for Node", () => {
     const env = parseWindowsInternetSettingsProxyOutput({
       proxyEnable: `
 HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings
@@ -328,7 +369,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 `,
     });
 
-    expect(env.NO_PROXY).toBe("::1,localhost,127.0.0.1");
+    expect(env.NO_PROXY).toBe("[::1],localhost,127.0.0.1");
   });
 
   it("filters incompatible Windows CIDR bypass entries", () => {
@@ -347,7 +388,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 `,
     });
 
-    expect(env.NO_PROXY).toBe("::1,10.0.0.0/8,2001:db8::10,.corp,localhost,127.0.0.1");
+    expect(env.NO_PROXY).toBe("[::1],10.0.0.0/8,[2001:db8::10],.corp,localhost,127.0.0.1");
   });
 
   it("preserves a wildcard macOS bypass list", () => {
@@ -393,8 +434,8 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settin
 }
 `);
 
-    expect(env.NO_PROXY).toBe("<local>,localhost,127.0.0.1,::1,.local");
-    expect(env.no_proxy).toBe("<local>,localhost,127.0.0.1,::1,.local");
+    expect(env.NO_PROXY).toBe("<local>,localhost,127.0.0.1,[::1],.local");
+    expect(env.no_proxy).toBe("<local>,localhost,127.0.0.1,[::1],.local");
   });
 
   it("preserves a wildcard Windows bypass list", () => {
