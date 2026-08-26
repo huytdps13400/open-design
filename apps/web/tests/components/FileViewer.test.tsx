@@ -7767,6 +7767,67 @@ describe('FileViewer SVG artifacts', () => {
     expect(screen.queryByText('Export started')).toBeNull();
   });
 
+  it('reports a failed browser PDF fallback instead of showing ready to save', async () => {
+    const restoreHost = installMockOpenDesignHost({
+      host: { pdf: { print: vi.fn().mockResolvedValue({ ok: false }) } },
+    });
+    vi.stubGlobal('alert', vi.fn());
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+      if (url === '/api/projects/project-1/export/pdf-image' || url === '/api/projects/project-1/export/pdf') {
+        return new Response(JSON.stringify({ error: { message: 'unavailable' } }), { status: 501 });
+      }
+      if (url.includes('/versions')) {
+        return new Response(JSON.stringify({ versions: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const file = baseFile({
+      name: 'index.html',
+      path: 'index.html',
+      mime: 'text/html',
+      kind: 'html',
+      artifactManifest: {
+        version: 1,
+        kind: 'html',
+        title: 'Page',
+        entry: 'index.html',
+        renderer: 'html',
+        exports: ['html'],
+      },
+    });
+
+    try {
+      render(
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={file}
+          liveHtml="<html><body><h1>Hello</h1></body></html>"
+        />,
+      );
+
+      await openUnifiedExportTab();
+      fireEvent.click(screen.getByRole('menuitem', { name: /Export as PDF/i }));
+
+      expect(await screen.findByText('Export failed. Please try again.')).toBeTruthy();
+      expect(screen.queryByText('Ready to save')).toBeNull();
+      await waitFor(() => {
+        const resultEvents = analyticsTrackMock.mock.calls.filter(
+          ([eventName]) => eventName === 'artifact_export_result',
+        );
+        expect(resultEvents).toHaveLength(1);
+        expect(resultEvents[0]?.[1]).toEqual(expect.objectContaining({
+          export_format: 'pdf',
+          result: 'failed',
+        }));
+      });
+    } finally {
+      restoreHost();
+    }
+  });
+
   it('keeps browser-managed exports ready to save without reporting success', async () => {
     const originalCreateObjectUrl = URL.createObjectURL;
     const originalRevokeObjectUrl = URL.revokeObjectURL;
@@ -7835,6 +7896,10 @@ describe('FileViewer SVG artifacts', () => {
       expect(
         analyticsTrackMock.mock.calls.filter(([eventName]) => eventName === 'artifact_export_result'),
       ).toEqual([]);
+      expect(fetchMock.mock.calls.some(([input]) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input);
+        return url.includes('/versions');
+      })).toBe(false);
     } finally {
       if (originalCreateObjectUrl) {
         Object.defineProperty(URL, 'createObjectURL', {

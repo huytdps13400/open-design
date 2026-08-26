@@ -7580,10 +7580,9 @@ function HtmlViewer({
       { requestId },
     );
     const started = performance.now();
-    const originPromise = resolveArtifactExportOrigin(context)
-      .catch(() => unknownExportOrigin());
     const finish = async (result: 'success' | 'failed' | 'cancelled', errorCode?: string) => {
-      const originProps = await originPromise;
+      const originProps = await resolveArtifactExportOrigin(context)
+        .catch(() => unknownExportOrigin());
       trackArtifactExportResult(
         analytics.track,
         {
@@ -14729,6 +14728,7 @@ function HtmlViewer({
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     });
     if (result === 'cancelled') return 'cancelled';
+    if (result === 'failed') throw new Error(t('fileViewer.exportFailed'));
     return result === 'desktop' ? 'saved' : 'ready_to_save';
   }
 
