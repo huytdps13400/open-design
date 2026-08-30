@@ -335,6 +335,43 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('OpenDesign-owned media execution is **disabled for this run**');
   });
 
+  it('requires a provider-backed selection when an image project has no allowed model', () => {
+    const out = composeSystemPrompt({
+      agentId: 'amr',
+      metadata: {
+        kind: 'image',
+        imageAspect: '1:1',
+      },
+      mediaExecution: {
+        mode: 'enabled',
+        allowedSurfaces: ['image'],
+      },
+    });
+
+    expect(out).toContain('No image model is selected for this run.');
+    expect(out).toContain('Ask the user to select a model from a configured provider before dispatching.');
+    expect(out).not.toContain('- Image model: `vela/gpt-image-2`');
+  });
+
+  it('does not override an image project allowlist with the AMR Vela fallback', () => {
+    const out = composeSystemPrompt({
+      agentId: 'amr',
+      metadata: {
+        kind: 'image',
+        imageModel: 'flux-pro-ultra',
+        imageAspect: '1:1',
+      },
+      mediaExecution: {
+        mode: 'enabled',
+        allowedSurfaces: ['image'],
+        allowedModels: ['flux-pro-ultra'],
+      },
+    });
+
+    expect(out).toContain('Allowed models for this run: `flux-pro-ultra`.');
+    expect(out).not.toContain('- Image model: `vela/gpt-image-2`');
+  });
+
   it('renders BYOK media defaults in the media contract', () => {
     const out = composeSystemPrompt({
       metadata: {
