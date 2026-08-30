@@ -299,7 +299,7 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
         imageAspect: '1:1',
         promptTemplate: { ...baseSummary },
       },
-      mediaExecution: { mode: 'disabled' },
+      mediaExecution: { mode: 'disabled', allowedSurfaces: ['image'] },
     });
 
     expect(out).toContain('## Media generation policy');
@@ -309,6 +309,8 @@ describe('composeSystemPrompt — metadata.promptTemplate', () => {
     expect(out).not.toContain('## Media generation contract');
     expect(out).not.toContain('## Codex built-in imagegen override');
     expect(out).not.toContain('Generate the image with Codex built-in imagegen');
+    expect(out).not.toContain('No image model is selected for this run.');
+    expect(out).not.toContain('Ask the user to select a model');
   });
 
   it('renders enabled media allowlists in the media contract', () => {
